@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+
+# BSD Zero Clause License
+#
+# Copyright (c) 2024 Oleg Oshmyan (Chortos-2) <chortos@inbox.lv>
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+# REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+# INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+# LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+# OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+# PERFORMANCE OF THIS SOFTWARE.
+
+import argparse
+import os
+import pathlib
+import re
+import struct
+import torrent_parser as tp
+
+def utorrent_part_file(path):
+	hexsize = re.match(r'^~uTorrentPartFile_([1-9A-F][0-9A-F]*)\.dat$', os.path.basename(path))
+	try:
+		size = int(hexsize[1], 16)
+	except Exception:
+		raise argparse.ArgumentTypeError('invalid file name (must match ~uTorrentPartFile_HEXNUM.dat)')
+	return size, open(path, 'rb')
+
+parser = argparse.ArgumentParser(description='Convert uTorrentPartFile to .part files')
+parser.add_argument('torrent', type=tp.parse_torrent_file)
+parser.add_argument('uTorrentPartFile', type=utorrent_part_file)
+parser.add_argument('outdir', type=pathlib.Path)
+args = parser.parse_args()
+
+size, utpart = args.uTorrentPartFile
+nparts = -(-size >> 16)
+header = utpart.read(nparts << 2)
+
+dir_made = False
+torrent_pos = 0
+for file in args.torrent['info']['files']:
+	length = file['length']
+	path = args.outdir / pathlib.PurePath(*file['path'])
+	if not path.is_file():
+		ipart = torrent_pos >> 16
+		subpart_offset = torrent_pos & 0xFFFF
+		outfd = None
+		outpos = 0
+		try:
+			while outpos < length:
+				data_index, = struct.unpack_from('<i', header, ipart << 2)
+				partlen = min(0x10000 - subpart_offset, length - outpos)
+				if data_index:
+					data_offset = data_index - 1 << 16
+					data_pos = len(header) + data_offset + subpart_offset
+					if outfd is None:
+						if not dir_made:
+							os.makedirs(os.path.normpath(args.outdir), exist_ok=True)
+							dir_made = True
+						flags = os.O_WRONLY | os.O_CREAT
+						if hasattr(os, 'O_BINARY'):
+							flags |= os.O_BINARY
+						outfd = os.open(str(path) + '.part', flags, 0o666)
+						os.truncate(outfd, length)
+					os.lseek(outfd, outpos, os.SEEK_SET)
+					remain = partlen
+					while remain:
+						nread = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
+						if not nread:
+							break
+						remain -= nread
+						data_pos += nread
+				outpos += partlen
+				subpart_offset = 0
+				ipart += 1
+		finally:
+			if outfd is not None:
+				os.close(outfd)
+	torrent_pos += length

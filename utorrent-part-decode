@@ -69,11 +69,11 @@ for file in args.torrent['info']['files']:
 					os.lseek(outfd, outpos, os.SEEK_SET)
 					remain = partlen
 					while remain:
-						nread = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
-						if not nread:
+						nwritten = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
+						if not nwritten:
 							break
-						remain -= nread
-						data_pos += nread
+						remain -= nwritten
+						data_pos += nwritten
 				outpos += partlen
 				subpart_offset = 0
 				ipart += 1

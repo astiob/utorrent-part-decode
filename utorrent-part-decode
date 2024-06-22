@@ -45,6 +45,7 @@ copy_file_range = getattr(os, 'copy_file_range', None)
 
 
 def copy(data_pos):
+	global buffer
 	os.lseek(outfd, outpos, os.SEEK_SET)
 	remain = partlen
 
@@ -67,14 +68,26 @@ def copy(data_pos):
 			if e.errno == errno.EIO or remain != partlen:
 				raise
 
-	while remain:
-		nwritten = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
-		if not nwritten:
+	if buffer is None:
+		try:
+			while remain:
+				nwritten = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
+				if not nwritten:
+					return
+				remain -= nwritten
+				data_pos += nwritten
 			return
-		remain -= nwritten
-		data_pos += nwritten
+		except Exception as e:
+			if isinstance(e, OSError) and e.errno == errno.EIO or remain != partlen:
+				raise
+			buffer = bytearray(0x10000)
+
+	utpart.seek(data_pos)
+	nread = utpart.readinto(memoryview(buffer)[:partlen])
+	os.write(outfd, memoryview(buffer)[:nread])
 
 
+buffer = None
 dir_made = False
 torrent_pos = 0
 for file in args.torrent['info']['files']:

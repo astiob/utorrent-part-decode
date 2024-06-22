@@ -16,6 +16,7 @@
 # PERFORMANCE OF THIS SOFTWARE.
 
 import argparse
+import errno
 import os
 import pathlib
 import re
@@ -39,6 +40,40 @@ args = parser.parse_args()
 size, utpart = args.uTorrentPartFile
 nparts = -(-size >> 16)
 header = utpart.read(nparts << 2)
+
+copy_file_range = getattr(os, 'copy_file_range', None)
+
+
+def copy(data_pos):
+	os.lseek(outfd, outpos, os.SEEK_SET)
+	remain = partlen
+
+	if copy_file_range:
+		try:
+			while remain:
+				nwritten = copy_file_range(utpart.fileno(), outfd, remain, data_pos)
+				if not nwritten:
+					if remain == partlen:
+						# Might be a spurious failure
+						# (on some file system and kernel combinations)
+						break
+					else:
+						return
+				remain -= nwritten
+				data_pos += nwritten
+			else:
+				return
+		except OSError as e:
+			if e.errno == errno.EIO or remain != partlen:
+				raise
+
+	while remain:
+		nwritten = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
+		if not nwritten:
+			return
+		remain -= nwritten
+		data_pos += nwritten
+
 
 dir_made = False
 torrent_pos = 0
@@ -66,14 +101,7 @@ for file in args.torrent['info']['files']:
 							flags |= os.O_BINARY
 						outfd = os.open(str(path) + '.part', flags, 0o666)
 						os.truncate(outfd, length)
-					os.lseek(outfd, outpos, os.SEEK_SET)
-					remain = partlen
-					while remain:
-						nwritten = os.sendfile(outfd, utpart.fileno(), data_pos, remain)
-						if not nwritten:
-							break
-						remain -= nwritten
-						data_pos += nwritten
+					copy(data_pos)
 				outpos += partlen
 				subpart_offset = 0
 				ipart += 1
